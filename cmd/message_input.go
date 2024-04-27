@@ -1,4 +1,4 @@
-package run
+package cmd
 
 import (
 	"log"
@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/atotto/clipboard"
-	"github.com/ayn2op/discordo/config"
+	"github.com/ayn2op/discordo/internal/constants"
 	"github.com/diamondburned/arikawa/v3/api"
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/arikawa/v3/utils/json/option"
@@ -17,14 +17,16 @@ import (
 
 type MessageInput struct {
 	*tview.TextArea
+	replyMessageIdx int
 }
 
 func newMessageInput() *MessageInput {
 	mi := &MessageInput{
-		TextArea: tview.NewTextArea(),
+		TextArea:        tview.NewTextArea(),
+		replyMessageIdx: -1,
 	}
 
-	mi.SetTextStyle(tcell.StyleDefault.Background(tcell.GetColor(config.Current.Theme.BackgroundColor)))
+	mi.SetTextStyle(tcell.StyleDefault.Background(tcell.GetColor(cfg.Theme.BackgroundColor)))
 	mi.SetClipboard(func(s string) {
 		_ = clipboard.WriteAll(s)
 	}, func() string {
@@ -33,35 +35,34 @@ func newMessageInput() *MessageInput {
 	})
 
 	mi.SetInputCapture(mi.onInputCapture)
-	mi.SetBackgroundColor(tcell.GetColor(config.Current.Theme.BackgroundColor))
+	mi.SetBackgroundColor(tcell.GetColor(cfg.Theme.BackgroundColor))
 
-	mi.SetTitleColor(tcell.GetColor(config.Current.Theme.TitleColor))
+	mi.SetTitleColor(tcell.GetColor(cfg.Theme.TitleColor))
 	mi.SetTitleAlign(tview.AlignLeft)
 
-	p := config.Current.Theme.BorderPadding
-	mi.SetBorder(config.Current.Theme.Border)
-	mi.SetBorderColor(tcell.GetColor(config.Current.Theme.BorderColor))
+	p := cfg.Theme.BorderPadding
+	mi.SetBorder(cfg.Theme.Border)
+	mi.SetBorderColor(tcell.GetColor(cfg.Theme.BorderColor))
 	mi.SetBorderPadding(p[0], p[1], p[2], p[3])
 
 	return mi
 }
 
 func (mi *MessageInput) reset() {
+	mi.replyMessageIdx = -1
 	mi.SetTitle("")
 	mi.SetText("", true)
 }
 
 func (mi *MessageInput) onInputCapture(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Name() {
-	case config.Current.Keys.MessageInput.Send:
-		mi.sendAction()
+	case cfg.Keys.MessageInput.Send:
+		mi.send()
 		return nil
-	case "Alt+Enter":
-		return tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
-	case config.Current.Keys.MessageInput.LaunchEditor:
-		mainFlex.messageInput.launchEditorAction()
+	case cfg.Keys.MessageInput.Editor:
+		mi.editor()
 		return nil
-	case config.Current.Keys.Cancel:
+	case cfg.Keys.MessageInput.Cancel:
 		mi.reset()
 		return nil
 	}
@@ -69,7 +70,7 @@ func (mi *MessageInput) onInputCapture(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-func (mi *MessageInput) sendAction() {
+func (mi *MessageInput) send() {
 	if !mainFlex.guildsTree.selectedChannelID.IsValid() {
 		return
 	}
@@ -79,7 +80,7 @@ func (mi *MessageInput) sendAction() {
 		return
 	}
 
-	if mainFlex.messagesText.selectedMessage != -1 {
+	if mi.replyMessageIdx != -1 {
 		ms, err := discordState.Cabinet.Messages(mainFlex.guildsTree.selectedChannelID)
 		if err != nil {
 			log.Println(err)
@@ -88,7 +89,7 @@ func (mi *MessageInput) sendAction() {
 
 		data := api.SendMessageData{
 			Content:         text,
-			Reference:       &discord.MessageReference{MessageID: ms[mainFlex.messagesText.selectedMessage].ID},
+			Reference:       &discord.MessageReference{MessageID: ms[mi.replyMessageIdx].ID},
 			AllowedMentions: &api.AllowedMentions{RepliedUser: option.False},
 		}
 
@@ -96,27 +97,38 @@ func (mi *MessageInput) sendAction() {
 			data.AllowedMentions.RepliedUser = option.True
 		}
 
-		go discordState.SendMessageComplex(mainFlex.guildsTree.selectedChannelID, data)
+		go func() {
+			if _, err := discordState.SendMessageComplex(mainFlex.guildsTree.selectedChannelID, data); err != nil {
+				log.Println("failed to send message:", err)
+			}
+		}()
 	} else {
-		go discordState.SendMessage(mainFlex.guildsTree.selectedChannelID, text)
+		go func() {
+			if _, err := discordState.SendMessage(mainFlex.guildsTree.selectedChannelID, text); err != nil {
+				log.Println("failed to send message:", err)
+			}
+		}()
 	}
 
-	mainFlex.messagesText.selectedMessage = -1
-	mainFlex.messagesText.Highlight()
+	mi.replyMessageIdx = -1
 	mi.reset()
+
+	mainFlex.messagesText.Highlight()
+	mainFlex.messagesText.ScrollToEnd()
 }
 
-func (mi *MessageInput) launchEditorAction() {
-	e := config.Current.Editor
+func (mi *MessageInput) editor() {
+	e := cfg.Editor
 	if e == "default" {
 		e = os.Getenv("EDITOR")
 	}
 
-	f, err := os.CreateTemp("", config.Name+"-*.md")
+	f, err := os.CreateTemp("", constants.TmpFilePattern)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+	_, _ = f.WriteString(mi.GetText())
 	f.Close()
 
 	defer os.Remove(f.Name())
@@ -140,5 +152,5 @@ func (mi *MessageInput) launchEditorAction() {
 		return
 	}
 
-	mi.SetText(string(msg), true)
+	mi.SetText(strings.TrimSpace(string(msg)), true)
 }

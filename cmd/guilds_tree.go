@@ -1,4 +1,4 @@
-package run
+package cmd
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ayn2op/discordo/config"
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/arikawa/v3/gateway"
 	"github.com/gdamore/tcell/v2"
@@ -16,61 +15,63 @@ import (
 type GuildsTree struct {
 	*tview.TreeView
 
-	root              *tview.TreeNode
 	selectedChannelID discord.ChannelID
 }
 
 func newGuildsTree() *GuildsTree {
 	gt := &GuildsTree{
 		TreeView: tview.NewTreeView(),
-
-		root: tview.NewTreeNode(""),
 	}
 
+	root := tview.NewTreeNode("")
+	gt.SetRoot(root)
+
 	gt.SetTopLevel(1)
-	gt.SetRoot(gt.root)
-	gt.SetGraphics(config.Current.Theme.GuildsTree.Graphics)
-	gt.SetBackgroundColor(tcell.GetColor(config.Current.Theme.BackgroundColor))
+	gt.SetGraphics(cfg.Theme.GuildsTree.Graphics)
+	gt.SetBackgroundColor(tcell.GetColor(cfg.Theme.BackgroundColor))
 	gt.SetSelectedFunc(gt.onSelected)
 
 	gt.SetTitle("Guilds")
-	gt.SetTitleColor(tcell.GetColor(config.Current.Theme.TitleColor))
+	gt.SetTitleColor(tcell.GetColor(cfg.Theme.TitleColor))
 	gt.SetTitleAlign(tview.AlignLeft)
 
-	p := config.Current.Theme.BorderPadding
-	gt.SetBorder(config.Current.Theme.Border)
-	gt.SetBorderColor(tcell.GetColor(config.Current.Theme.BorderColor))
+	p := cfg.Theme.BorderPadding
+	gt.SetBorder(cfg.Theme.Border)
+	gt.SetBorderColor(tcell.GetColor(cfg.Theme.BorderColor))
 	gt.SetBorderPadding(p[0], p[1], p[2], p[3])
 
+	gt.SetInputCapture(gt.onInputCapture)
 	return gt
 }
 
-func (gt *GuildsTree) createGuildFolderNode(parent *tview.TreeNode, gf gateway.GuildFolder) {
+func (gt *GuildsTree) createFolderNode(folder gateway.GuildFolder) {
 	var name string
-	if gf.Name != "" {
-		name = fmt.Sprintf("[%s]%s[-]", gf.Color.String(), gf.Name)
-	} else {
+	if folder.Name == "" {
 		name = "Folder"
+	} else {
+		name = fmt.Sprintf("[%s]%s[-]", folder.Color.String(), folder.Name)
 	}
 
-	n := tview.NewTreeNode(name)
-	parent.AddChild(n)
+	root := gt.GetRoot()
+	folderNode := tview.NewTreeNode(name)
+	folderNode.SetExpanded(cfg.Theme.GuildsTree.AutoExpandFolders)
+	root.AddChild(folderNode)
 
-	for _, gid := range gf.GuildIDs {
-		g, err := discordState.Cabinet.Guild(gid)
+	for _, gID := range folder.GuildIDs {
+		g, err := discordState.Cabinet.Guild(gID)
 		if err != nil {
-			log.Println(err)
+			log.Printf("guild %v not found in state: %v\n", gID, err)
 			continue
 		}
 
-		gt.createGuildNode(n, *g)
+		gt.createGuildNode(folderNode, *g)
 	}
 }
 
 func (gt *GuildsTree) createGuildNode(n *tview.TreeNode, g discord.Guild) {
-	gn := tview.NewTreeNode(g.Name)
-	gn.SetReference(g.ID)
-	n.AddChild(gn)
+	guildNode := tview.NewTreeNode(g.Name)
+	guildNode.SetReference(g.ID)
+	n.AddChild(guildNode)
 }
 
 func (gt *GuildsTree) channelToString(c discord.Channel) string {
@@ -107,22 +108,23 @@ func (gt *GuildsTree) channelToString(c discord.Channel) string {
 	return s
 }
 
-func (gt *GuildsTree) createChannelNode(n *tview.TreeNode, c discord.Channel) {
+func (gt *GuildsTree) createChannelNode(n *tview.TreeNode, c discord.Channel) *tview.TreeNode {
 	if c.Type != discord.DirectMessage && c.Type != discord.GroupDM {
 		ps, err := discordState.Permissions(c.ID, discordState.Ready().User.ID)
 		if err != nil {
 			log.Println(err)
-			return
+			return nil
 		}
 
 		if !ps.Has(discord.PermissionViewChannel) {
-			return
+			return nil
 		}
 	}
 
-	cn := tview.NewTreeNode(gt.channelToString(c))
-	cn.SetReference(c.ID)
-	n.AddChild(cn)
+	channelNode := tview.NewTreeNode(gt.channelToString(c))
+	channelNode.SetReference(c.ID)
+	n.AddChild(channelNode)
+	return channelNode
 }
 
 func (gt *GuildsTree) createChannelNodes(n *tview.TreeNode, cs []discord.Channel) {
@@ -188,15 +190,8 @@ func (gt *GuildsTree) onSelected(n *tview.TreeNode) {
 
 		gt.createChannelNodes(n, cs)
 	case discord.ChannelID:
-		ms, err := discordState.Messages(ref, config.Current.MessagesLimit)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		for i := len(ms) - 1; i >= 0; i-- {
-			mainFlex.messagesText.createMessage(ms[i])
-		}
+		mainFlex.messagesText.drawMsgs(ref)
+		mainFlex.messagesText.ScrollToEnd()
 
 		c, err := discordState.Cabinet.Channel(ref)
 		if err != nil {
@@ -223,4 +218,22 @@ func (gt *GuildsTree) onSelected(n *tview.TreeNode) {
 			gt.createChannelNode(n, c)
 		}
 	}
+}
+
+func (gt *GuildsTree) onInputCapture(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Name() {
+	case cfg.Keys.SelectPrevious:
+		return tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)
+	case cfg.Keys.SelectNext:
+		return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
+	case cfg.Keys.SelectFirst:
+		return tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone)
+	case cfg.Keys.SelectLast:
+		return tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone)
+
+	case cfg.Keys.GuildsTree.SelectCurrent:
+		return tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	}
+
+	return nil
 }

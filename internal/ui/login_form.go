@@ -2,25 +2,30 @@ package ui
 
 import (
 	"errors"
+	"log"
 
-	"github.com/ayn2op/discordo/config"
+	"github.com/ayn2op/discordo/internal/config"
+	"github.com/ayn2op/discordo/internal/constants"
 	"github.com/diamondburned/arikawa/v3/api"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/zalando/go-keyring"
 )
 
-type LoginForm struct {
-	*tview.Form
-	Token chan string
-	Error chan error
+type Token struct {
+	Value string
+	Error error
 }
 
-func NewLoginForm() *LoginForm {
+type LoginForm struct {
+	*tview.Form
+	Token chan Token
+}
+
+func NewLoginForm(cfg *config.Config) *LoginForm {
 	lf := &LoginForm{
 		Form:  tview.NewForm(),
-		Token: make(chan string, 1),
-		Error: make(chan error, 0),
+		Token: make(chan Token, 1),
 	}
 
 	lf.AddInputField("Email", "", 0, nil, nil)
@@ -30,12 +35,12 @@ func NewLoginForm() *LoginForm {
 	lf.AddButton("Login", lf.onLoginButtonSelected)
 
 	lf.SetTitle("Login")
-	lf.SetTitleColor(tcell.GetColor(config.Current.Theme.TitleColor))
+	lf.SetTitleColor(tcell.GetColor(cfg.Theme.TitleColor))
 	lf.SetTitleAlign(tview.AlignLeft)
 
-	p := config.Current.Theme.BorderPadding
-	lf.SetBorder(config.Current.Theme.Border)
-	lf.SetBorderColor(tcell.GetColor(config.Current.Theme.BorderColor))
+	p := cfg.Theme.BorderPadding
+	lf.SetBorder(cfg.Theme.Border)
+	lf.SetBorderColor(tcell.GetColor(cfg.Theme.BorderColor))
 	lf.SetBorderPadding(p[0], p[1], p[2], p[3])
 
 	return lf
@@ -53,7 +58,7 @@ func (lf *LoginForm) onLoginButtonSelected() {
 	// Log in using the provided email and password.
 	lr, err := apiClient.Login(email, password)
 	if err != nil {
-		lf.Error <- err
+		lf.Token <- Token{Error: err}
 		return
 	}
 
@@ -61,25 +66,30 @@ func (lf *LoginForm) onLoginButtonSelected() {
 	if lr.MFA && lr.Token == "" {
 		code := lf.GetFormItem(2).(*tview.InputField).GetText()
 		if code == "" {
+			lf.Token <- Token{Error: errors.New("code required")}
 			return
 		}
 
 		lr, err = apiClient.TOTP(code, lr.Ticket)
 		if err != nil {
-			lf.Error <- err
+			lf.Token <- Token{Error: err}
 			return
 		}
 	}
 
 	if lr.Token == "" {
-		lf.Error <- errors.New("Token is missing")
+		lf.Token <- Token{Error: errors.New("missing token")}
 		return
 	}
 
 	rememberMe := lf.GetFormItem(3).(*tview.Checkbox).IsChecked()
 	if rememberMe {
-		go keyring.Set(config.Name, "token", lr.Token)
+		go func() {
+			if err := keyring.Set(constants.Name, "token", lr.Token); err != nil {
+				log.Println(err)
+			}
+		}()
 	}
 
-	lf.Token <- lr.Token
+	lf.Token <- Token{Value: lr.Token}
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ayn2op/discordo/internal/config"
 	"github.com/ayn2op/discordo/internal/logger"
+	"github.com/ayn2op/discordo/internal/plugin"
 	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/rivo/tview"
 )
@@ -18,13 +19,17 @@ var (
 )
 
 func Run(token string) error {
+	if err := logger.Load(); err != nil {
+		return err
+	}
+
 	var err error
 	cfg, err = config.Load()
 	if err != nil {
 		return err
 	}
 
-	if err := logger.Load(); err != nil {
+	if err := plugin.Load(); err != nil {
 		return err
 	}
 
